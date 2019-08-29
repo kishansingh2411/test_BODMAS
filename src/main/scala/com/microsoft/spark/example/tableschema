@@ -1,0 +1,46 @@
+create table new_model(id int, name varchar(100),formula varchar(500), created_date datetime, updated_date datetime, execution_type varchar(20));
+insert into kishan.new_model values(2,"kishan_formula2","(kishan.account_benefit.benefit_amount + kishan.account_benefit.benefit_amount * 10) + (kishan.account_benefit.benefit_amount * 10) * (kishan.account_benefit.benefit_amount + 5)",current_time(), current_time(), "new" );
+
+create table kishan.tbl_schema_map (tbl_col_name varchar(500), df_col_name  varchar(500));
+insert into kishan.tbl_schema_map (tbl_col_name,df_col_name) values('kishan.account_benefit.benefit_amount','account_benefit.benefit_amount');
+
+select * from tbl_schema_map;
+
+def main(args: Array[String]): Unit = {
+    val spark = SparkSession.builder().appName("test_connection").master("local[*]").getOrCreate()
+    val sql_conf = ConfigFactory.load("application.conf")
+    val connectionProperties = new Properties()
+    connectionProperties.put("user",sql_conf.getString("sql.details.username"))
+    connectionProperties.put("password",sql_conf.getString("sql.details.password"))
+    connectionProperties.put("driver",sql_conf.getString("sql.details.driver"))
+
+    var df_tbl_acc_dtl = spark.read.jdbc(sql_conf.getString("sql.details.url"),sql_conf.getString("sql.details.tbl_acc_dtl"),connectionProperties)
+    var df_tbl_acc_ben = spark.read.jdbc(sql_conf.getString("sql.details.url"),sql_conf.getString("sql.details.tbl_acc_ben"),connectionProperties)
+    var df_tbl_new_mdl = spark.read.jdbc(sql_conf.getString("sql.details.url"),sql_conf.getString("sql.details.tbl_new_mdl"),connectionProperties)
+
+    df_tbl_acc_ben.createOrReplaceTempView("account_benefit")
+
+      def getMapFromSql(tableName: String): RDD[(String, String)]={
+      val mapRdd = spark.read.jdbc(sql_conf.getString("sql.details.url"),tableName,connectionProperties).rdd
+      val schemaMap = mapRdd.map(x => ((x.getAs[String]("tbl_col_name").toLowerCase), x.getAs[String]("df_col_name")))
+      schemaMap
+    }
+
+     val schemaMap = getMapFromSql(sql_conf.getString("sql.details.tbl_schema_map")).collectAsMap()
+     var formula = df_tbl_new_mdl.select("formula","name").where("execution_type == 'new'" ).collectAsList()
+
+    for(i<- 0 until(formula.size())){
+      var cleanformula = (formula.get(i)).mkString(",").split(",")(0).replaceAll("[\\[\\]]","")
+      var formula_name = (formula.get(i)).mkString(",").split(",")(1).replaceAll("[\\[\\]]","")
+      schemaMap.foreach(x=>{
+        cleanformula = cleanformula.replaceAll(x._1,x._2)
+      })
+      df_tbl_acc_ben = spark.sql(s"select *, ($cleanformula) as $formula_name from account_benefit ")
+      df_tbl_acc_ben.createOrReplaceTempView("account_benefit")
+
+      val query = "update"+ " " +sql_conf.getString("sql.details.tbl_new_mdl")+" "+ "set execution_type='completed' where name = "+ "'"+formula_name+"'"
+      update_sql_table.update_sql(query)
+
+    }
+
+    df_tbl_acc_ben.show(false)
